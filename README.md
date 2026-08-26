@@ -308,5 +308,3 @@ To allow direct browser uploads to Amazon S3, ensure the following CORS configur
 ## 📜 License
 
 This project is open-source and available under the [MIT License](https://www.google.com/search?q=LICENSE).
-
-```
