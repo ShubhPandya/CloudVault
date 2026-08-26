@@ -1,22 +1,42 @@
+import os
+import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from jose import jwt, JWTError
-from passlib.context import CryptContext
 from core.config import get_settings
 
 settings = get_settings()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 
 def hash_password(password: str) -> str:
-    """Hashes a raw plain-text password using bcrypt."""
-    return pwd_context.hash(password)
+    """Hashes a plain-text password using salt and PBKDF2-HMAC-SHA256."""
+    salt = os.urandom(16)
+    pwd_hash = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        100000,
+    )
+    return f"{salt.hex()}${pwd_hash.hex()}"
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifies a plain-text password against the stored bcrypt hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verifies a plain-text password against the stored salt$hash format."""
+    try:
+        salt_hex, hash_hex = hashed_password.split("$")
+        salt = bytes.fromhex(salt_hex)
+        expected_hash = bytes.fromhex(hash_hex)
+
+        computed_hash = hashlib.pbkdf2_hmac(
+            "sha256",
+            plain_password.encode("utf-8"),
+            salt,
+            100000,
+        )
+        return hmac.compare_digest(computed_hash, expected_hash)
+    except Exception:
+        return False
 
 
 def create_access_token(
