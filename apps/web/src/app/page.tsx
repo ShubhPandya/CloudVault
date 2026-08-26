@@ -1,7 +1,13 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { fetchUserAssets, directS3Upload, deleteAsset, Asset } from "./api";
+import {
+  fetchUserAssets,
+  directS3Upload,
+  deleteAsset,
+  fetchDirectDownloadUrl,
+  Asset,
+} from "./api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -18,6 +24,7 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -95,8 +102,33 @@ export default function Home() {
     }
   };
 
-  const handleDelete = async (assetId: string) => {
+  const handleDownload = async (asset: Asset) => {
     if (!token) return;
+    setDownloadingId(asset.asset_id);
+    try {
+      const downloadUrl = await fetchDirectDownloadUrl(asset.asset_id, token);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.setAttribute("download", asset.file_name);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err: any) {
+      alert(`Download failed: ${err.message}`);
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
+  const handleShare = async (asset: Asset) => {
+    const shareUrl = `${window.location.origin}/share/${asset.asset_id}`;
+    await navigator.clipboard.writeText(shareUrl);
+    setCopiedId(asset.asset_id);
+    setTimeout(() => setCopiedId(null), 3000);
+  };
+
+  const handleDelete = async (assetId: string) => {
+    if (!token || !assetId) return;
     setDeletingId(assetId);
     try {
       await deleteAsset(assetId, token);
@@ -106,12 +138,6 @@ export default function Home() {
     } finally {
       setDeletingId(null);
     }
-  };
-
-  const handleShare = (url: string, assetId: string) => {
-    navigator.clipboard.writeText(url);
-    setCopiedId(assetId);
-    setTimeout(() => setCopiedId(null), 2500);
   };
 
   if (!token) {
@@ -244,67 +270,63 @@ export default function Home() {
               </thead>
               <tbody className="divide-y divide-blue-900/20 font-medium">
                 {assets.length === 0 ? (
-                  <tr>
+                  <tr key="empty-row">
                     <td colSpan={5} className="py-8 text-center text-gray-500">
                       No assets uploaded yet.
                     </td>
                   </tr>
                 ) : (
-                  assets.map((asset) => (
-                    <tr key={asset.asset_id} className="hover:bg-blue-950/20 transition">
-                      <td className="py-3.5 px-4 font-semibold text-gray-200">
-                        {asset.file_name}
-                      </td>
-                      <td className="py-3.5 px-4 text-gray-400 font-mono">
-                        {asset.content_type}
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <span
-                          className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                            asset.status === "COMPLETED"
-                              ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                              : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
-                          }`}
-                        >
-                          {asset.status}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-gray-400 font-mono truncate max-w-[200px]">
-                        {asset.raw_s3_key}
-                      </td>
-                      <td className="py-3.5 px-4 text-right space-x-2 whitespace-nowrap">
-                        {asset.download_url ? (
-                          <>
-                            <a
-                              href={asset.download_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              download
-                              className="inline-block px-3 py-1.5 bg-blue-600/30 hover:bg-blue-600/50 border border-blue-500/40 text-blue-300 rounded-lg text-xs font-semibold transition"
-                            >
-                              Download
-                            </a>
-                            <button
-                              onClick={() => handleShare(asset.download_url!, asset.asset_id)}
-                              className="px-3 py-1.5 bg-purple-600/30 hover:bg-purple-600/50 border border-purple-500/40 text-purple-300 rounded-lg text-xs font-semibold transition"
-                            >
-                              {copiedId === asset.asset_id ? "Copied!" : "Share"}
-                            </button>
-                          </>
-                        ) : (
-                          <span className="text-gray-500 italic text-xs mr-2">Processing...</span>
-                        )}
+                  assets.map((asset, idx) => {
+                    const rowKey = asset.asset_id || `asset-${idx}`;
+                    return (
+                      <tr key={rowKey} className="hover:bg-blue-950/20 transition">
+                        <td className="py-3.5 px-4 font-semibold text-gray-200">
+                          {asset.file_name}
+                        </td>
+                        <td className="py-3.5 px-4 text-gray-400 font-mono">
+                          {asset.content_type}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span
+                            className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                              asset.status === "COMPLETED"
+                                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                                : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                            }`}
+                          >
+                            {asset.status}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-gray-400 font-mono truncate max-w-[200px]">
+                          {asset.raw_s3_key || "-"}
+                        </td>
+                        <td className="py-3.5 px-4 text-right space-x-2 whitespace-nowrap">
+                          <button
+                            onClick={() => handleDownload(asset)}
+                            disabled={downloadingId === asset.asset_id}
+                            className="px-3 py-1.5 bg-blue-600/30 hover:bg-blue-600/50 border border-blue-500/40 text-blue-300 rounded-lg text-xs font-semibold transition disabled:opacity-50"
+                          >
+                            {downloadingId === asset.asset_id ? "Downloading..." : "Download"}
+                          </button>
 
-                        <button
-                          onClick={() => handleDelete(asset.asset_id)}
-                          disabled={deletingId === asset.asset_id}
-                          className="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/40 border border-rose-500/40 text-rose-300 rounded-lg text-xs font-semibold transition disabled:opacity-50"
-                        >
-                          {deletingId === asset.asset_id ? "Deleting..." : "Delete"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))
+                          <button
+                            onClick={() => handleShare(asset)}
+                            className="px-3 py-1.5 bg-purple-600/30 hover:bg-purple-600/50 border border-purple-500/40 text-purple-300 rounded-lg text-xs font-semibold transition"
+                          >
+                            {copiedId === asset.asset_id ? "Copied Link!" : "Share"}
+                          </button>
+
+                          <button
+                            onClick={() => handleDelete(asset.asset_id)}
+                            disabled={deletingId === asset.asset_id}
+                            className="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/40 border border-rose-500/40 text-rose-300 rounded-lg text-xs font-semibold transition disabled:opacity-50"
+                          >
+                            {deletingId === asset.asset_id ? "Deleting..." : "Delete"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

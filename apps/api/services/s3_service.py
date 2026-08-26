@@ -31,6 +31,29 @@ def generate_presigned_upload_url(
     return url
 
 
+def generate_presigned_download_url(
+    object_key: str,
+    file_name: str,
+    expires_in: int = 86400,
+    force_download: bool = False,
+) -> str:
+    """Generates a secure S3 download/share URL with custom disposition."""
+    params = {
+        "Bucket": settings.S3_BUCKET_NAME,
+        "Key": object_key,
+    }
+
+    if force_download:
+        params["ResponseContentDisposition"] = f'attachment; filename="{file_name}"'
+
+    url = s3_client.generate_presigned_url(
+        ClientMethod="get_object",
+        Params=params,
+        ExpiresIn=expires_in,
+    )
+    return url
+
+
 def delete_s3_object(object_key: str) -> None:
     """Deletes an object key from the CloudVault S3 bucket."""
     try:

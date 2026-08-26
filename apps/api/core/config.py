@@ -1,31 +1,36 @@
+from pydantic_settings import BaseSettings
 from functools import lru_cache
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional
 
 
 class Settings(BaseSettings):
+    # App General Settings
     PROJECT_NAME: str = "CloudVault API"
-    ENVIRONMENT: str = "development"
-    AWS_REGION: str = "ap-south-1"  # Set to Mumbai (ap-south-1)
-    
-    # Cognito Settings
-    COGNITO_USER_POOL_ID: str = "ap-south-1_examplePoolId"
-    COGNITO_APP_CLIENT_ID: str = "exampleclientid123456789"
-    
-    # Presigned S3 Settings
+    VERSION: str = "1.0.0"
+    API_V1_STR: str = "/api/v1"
+
+    # AWS Configuration
+    AWS_REGION: str = "ap-south-1"
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+
+    # S3, DynamoDB & CloudFront
     S3_BUCKET_NAME: str = "cloudvault-raw-assets-dev"
-    PRESIGNED_EXPIRATION_SECONDS: int = 900
+    DYNAMODB_TABLE_NAME: str = "cloudvault-table-dev"
+    CLOUDFRONT_DOMAIN: str = ""
 
-    # Upstash Redis Settings (Free Tier REST API)
-    UPSTASH_REDIS_REST_URL: str = "https://example.upstash.io"
-    UPSTASH_REDIS_REST_TOKEN: str = "example_token"
-    CACHE_TTL_SECONDS: int = 300
+    # Security & JWT
+    JWT_SECRET: str = "cloudvault-dev-jwt-super-secret-key-change-in-prod"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
 
-    # CloudFront Edge Delivery Settings
-    CLOUDFRONT_DOMAIN: str = "d2gigprwulnub2.cloudfront.net"
-    CLOUDFRONT_KEY_PAIR_ID: str = ""
-    CLOUDFRONT_PRIVATE_KEY: str = ""
+    # Redis (Optional/Local Fallback)
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
 
 
 @lru_cache()

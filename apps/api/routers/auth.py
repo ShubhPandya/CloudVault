@@ -1,91 +1,82 @@
-import uuid
-from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, EmailStr
-from core.security import get_password_hash, verify_password, create_access_token
-from services.dynamodb_service import table
+from core.security import hash_password, verify_password, create_access_token
+from services.dynamodb_service import dynamodb, settings
+import uuid
 
-router = APIRouter()
+router = APIRouter(prefix="/api/v1/auth", tags=["Auth"])
+table = dynamodb.Table(settings.DYNAMODB_TABLE_NAME)
 
 
-class AuthRegisterRequest(BaseModel):
-    name: str
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: str
+
+
+class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
 
-class AuthLoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class AuthTokenResponse(BaseModel):
+class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user_id: str
-    name: str
     email: str
 
 
-@router.post("/signup", response_model=AuthTokenResponse)
-async def signup(payload: AuthRegisterRequest):
-    response = table.get_item(
-        Key={"PK": f"USER_EMAIL#{payload.email.lower()}", "SK": "ACCOUNT"}
-    )
+@router.post("/signup", status_code=status.HTTP_201_CREATED)
+async def signup(payload: SignupRequest):
+    # Check if user already exists
+    response = table.get_item(Key={"PK": f"USER#{payload.email}", "SK": "METADATA"})
     if "Item" in response:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An account with this email address already exists.",
+            detail="Email is already registered",
         )
 
     user_id = str(uuid.uuid4())
-    hashed_pwd = get_password_hash(payload.password)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    hashed_pwd = hash_password(payload.password)
 
-    table.put_item(
-        Item={
-            "PK": f"USER_EMAIL#{payload.email.lower()}",
-            "SK": "ACCOUNT",
-            "userId": user_id,
-            "passwordHash": hashed_pwd,
-            "name": payload.name,
-            "email": payload.email.lower(),
-            "createdAt": now_iso,
-        }
-    )
+    user_item = {
+        "PK": f"USER#{payload.email}",
+        "SK": "METADATA",
+        "user_id": user_id,
+        "email": payload.email,
+        "password_hash": hashed_pwd,
+        "full_name": payload.full_name,
+    }
 
-    token = create_access_token(
-        data={"sub": user_id, "email": payload.email.lower(), "name": payload.name}
-    )
+    # Store secondary lookup index by user_id
+    id_lookup = {
+        "PK": f"USERID#{user_id}",
+        "SK": "METADATA",
+        "user_id": user_id,
+        "email": payload.email,
+    }
 
-    return AuthTokenResponse(
-        access_token=token,
-        user_id=user_id,
-        name=payload.name,
-        email=payload.email.lower(),
-    )
+    table.put_item(Item=user_item)
+    table.put_item(Item=id_lookup)
+
+    return {"message": "Account created successfully", "user_id": user_id}
 
 
-@router.post("/login", response_model=AuthTokenResponse)
-async def login(payload: AuthLoginRequest):
-    response = table.get_item(
-        Key={"PK": f"USER_EMAIL#{payload.email.lower()}", "SK": "ACCOUNT"}
-    )
-    item = response.get("Item")
+@router.post("/login", response_model=TokenResponse)
+async def login(payload: LoginRequest):
+    response = table.get_item(Key={"PK": f"USER#{payload.email}", "SK": "METADATA"})
+    user = response.get("Item")
 
-    if not item or not verify_password(payload.password, item.get("passwordHash", "")):
+    if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password.",
+            detail="Invalid email or password",
         )
 
-    token = create_access_token(
-        data={"sub": item["userId"], "email": item["email"], "name": item["name"]}
-    )
+    token = create_access_token({"sub": user["user_id"], "email": user["email"]})
 
-    return AuthTokenResponse(
+    return TokenResponse(
         access_token=token,
-        user_id=item["userId"],
-        name=item["name"],
-        email=item["email"],
+        user_id=user["user_id"],
+        email=user["email"],
     )

@@ -7,7 +7,6 @@ export interface Asset {
   status: string;
   raw_s3_key: string;
   download_url?: string;
-  thumbnail_url?: string;
 }
 
 export async function fetchUserAssets(token: string): Promise<Asset[]> {
@@ -15,6 +14,23 @@ export async function fetchUserAssets(token: string): Promise<Asset[]> {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw new Error("Failed to fetch assets");
+  return res.json();
+}
+
+export async function fetchDirectDownloadUrl(assetId: string, token: string): Promise<string> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/assets/${assetId}/download-url`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to generate download link");
+  const data = await res.json();
+  return data.download_url;
+}
+
+export async function fetchSharedAsset(assetId: string, token: string): Promise<Asset> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/assets/shared/${assetId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to load shared asset. Ensure you are signed in.");
   return res.json();
 }
 

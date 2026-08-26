@@ -1,31 +1,49 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
-import jwt
+from jose import jwt, JWTError
 from passlib.context import CryptContext
+from core.config import get_settings
+
+settings = get_settings()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-SECRET_KEY = "cloudvault-dev-jwt-super-secret-key-change-in-prod"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 Days
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-
-
-def get_password_hash(password: str) -> str:
+def hash_password(password: str) -> str:
+    """Hashes a raw plain-text password using bcrypt."""
     return pwd_context.hash(password)
 
 
-def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verifies a plain-text password against the stored bcrypt hash."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def create_access_token(
+    data: dict, expires_delta: Optional[timedelta] = None
+) -> str:
+    """Generates a signed JWT access token."""
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(
+            minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        )
+
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(
+        to_encode, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM
+    )
+    return encoded_jwt
 
 
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
+    """Decodes and validates a signed JWT token."""
     try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except Exception:
+        payload = jwt.decode(
+            token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
+        )
+        return payload
+    except JWTError:
         return None
