@@ -1,283 +1,307 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import {
-  directS3Upload,
-  fetchUserAssets,
-  getAssetDownloadUrl,
-  loginUser,
-  registerUser,
-  AssetRecord,
-  UserSession,
-} from "./api";
+import { fetchUserAssets, directS3Upload, deleteAsset, Asset } from "./api";
 
-export default function Dashboard() {
-  const [session, setSession] = useState<UserSession | null>(null);
-  const [isRegister, setIsRegister] = useState<boolean>(false);
-  const [authName, setAuthName] = useState<string>("");
-  const [authEmail, setAuthEmail] = useState<string>("");
-  const [authPassword, setAuthPassword] = useState<string>("");
-  const [authError, setAuthError] = useState<string>("");
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-  const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState<boolean>(false);
-  const [assets, setAssets] = useState<AssetRecord[]>([]);
-  const [statusMsg, setStatusMsg] = useState<string>("");
+export default function Home() {
+  const [token, setToken] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem("cloudvault_session");
-    if (saved) {
-      try {
-        setSession(JSON.parse(saved));
-      } catch (e) {
-        localStorage.removeItem("cloudvault_session");
-      }
-    }
+    const savedToken = localStorage.getItem("token");
+    if (savedToken) setToken(savedToken);
   }, []);
 
+  useEffect(() => {
+    if (token) {
+      loadAssets();
+      const interval = setInterval(loadAssets, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [token]);
+
   const loadAssets = async () => {
-    if (!session?.access_token) return;
+    if (!token) return;
     try {
-      const data = await fetchUserAssets(session.access_token);
+      const data = await fetchUserAssets(token);
       setAssets(data);
-    } catch (err: unknown) {
-      console.error("Failed to load assets", err);
+    } catch (err) {
+      console.error("Error loading assets:", err);
     }
   };
 
-  useEffect(() => {
-    if (session) {
-      loadAssets();
-    }
-  }, [session]);
-
-  const handleAuthSubmit = async (e: React.FormEvent) => {
+  const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError("");
+    const endpoint = isSignUp ? "/api/v1/auth/signup" : "/api/v1/auth/login";
+    const body = isSignUp
+      ? { email, password, full_name: fullName }
+      : { email, password };
+
     try {
-      let data: UserSession;
-      if (isRegister) {
-        data = await registerUser(authName, authEmail, authPassword);
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Authentication failed");
+
+      if (isSignUp) {
+        setIsSignUp(false);
+        setAuthError("Account created! Please log in.");
       } else {
-        data = await loginUser(authEmail, authPassword);
+        localStorage.setItem("token", data.access_token);
+        setToken(data.access_token);
       }
-      setSession(data);
-      localStorage.setItem("cloudvault_session", JSON.stringify(data));
-      setAuthPassword("");
-    } catch (err: unknown) {
-      setAuthError(err instanceof Error ? err.message : "Authentication failed");
+    } catch (err: any) {
+      setAuthError(err.message);
     }
   };
 
-  const handleLogout = () => {
-    setSession(null);
+  const handleSignOut = () => {
+    localStorage.removeItem("token");
+    setToken(null);
     setAssets([]);
-    localStorage.removeItem("cloudvault_session");
   };
 
-  const handleUpload = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!file || !session) return;
-
+  const handleUpload = async () => {
+    if (!selectedFile || !token) return;
+    setUploading(true);
+    setUploadStatus("Ingesting to S3...");
     try {
-      setUploading(true);
-      setStatusMsg("Acquiring signed ticket & streaming directly to Amazon S3...");
-
-      await directS3Upload(file, session.access_token);
-
-      setStatusMsg("Upload complete! SQS event dispatched to Lambda worker.");
-      setFile(null);
-
-      setTimeout(() => loadAssets(), 2000);
-      setTimeout(() => loadAssets(), 5000);
-    } catch (err: unknown) {
-      setStatusMsg(err instanceof Error ? `Upload failed: ${err.message}` : "Upload error");
+      await directS3Upload(selectedFile, token);
+      setUploadStatus("Upload complete! SQS event dispatched to Lambda worker.");
+      setSelectedFile(null);
+      await loadAssets();
+    } catch (err: any) {
+      setUploadStatus(`Upload failed: ${err.message}`);
     } finally {
       setUploading(false);
     }
   };
 
-  const handleDownload = async (assetId: string) => {
-    if (!session) return;
+  const handleDelete = async (assetId: string) => {
+    if (!token) return;
+    setDeletingId(assetId);
     try {
-      const downloadUrl = await getAssetDownloadUrl(assetId, session.access_token);
-      window.open(downloadUrl, "_blank", "noopener,noreferrer");
-    } catch (err: unknown) {
-      alert("Failed to acquire secure download link.");
+      await deleteAsset(assetId, token);
+      setAssets((prev) => prev.filter((a) => a.asset_id !== assetId));
+    } catch (err: any) {
+      alert(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingId(null);
     }
   };
 
-  // 1. Unauthenticated: Show Login / Signup Screen
-  if (!session) {
+  const handleShare = (url: string, assetId: string) => {
+    navigator.clipboard.writeText(url);
+    setCopiedId(assetId);
+    setTimeout(() => setCopiedId(null), 2500);
+  };
+
+  if (!token) {
     return (
-      <main className="min-h-screen bg-slate-950 text-slate-50 flex items-center justify-center p-4">
-        <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl w-full max-w-md shadow-2xl space-y-6">
-          <div className="text-center">
-            <h1 className="text-3xl font-bold tracking-tight text-indigo-400">CloudVault</h1>
-            <p className="text-xs text-slate-400 mt-1">
-              {isRegister ? "Create your secure account" : "Sign in to access your assets"}
-            </p>
-          </div>
+      <div className="min-h-screen bg-[#070b19] flex items-center justify-center p-4 text-white">
+        <div className="bg-[#0e162f] border border-blue-900/40 rounded-2xl p-8 max-w-md w-full shadow-2xl">
+          <h1 className="text-3xl font-bold text-center text-blue-400 mb-2">CloudVault</h1>
+          <p className="text-gray-400 text-sm text-center mb-6">
+            {isSignUp ? "Create a secure account" : "Sign in to your private vault"}
+          </p>
 
           {authError && (
-            <div className="bg-rose-950 border border-rose-800 text-rose-300 px-3 py-2 rounded-lg text-xs">
+            <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-xs p-3 rounded-lg mb-4">
               {authError}
             </div>
           )}
 
-          <form onSubmit={handleAuthSubmit} className="space-y-4">
-            {isRegister && (
+          <form onSubmit={handleAuth} className="space-y-4">
+            {isSignUp && (
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Full Name</label>
+                <label className="text-xs font-semibold text-gray-300">Full Name</label>
                 <input
                   type="text"
                   required
-                  value={authName}
-                  onChange={(e) => setAuthName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  className="w-full mt-1 bg-[#162244] border border-blue-800/40 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500"
                 />
               </div>
             )}
             <div>
-              <label className="block text-xs text-slate-400 mb-1">Email Address</label>
+              <label className="text-xs font-semibold text-gray-300">Email Address</label>
               <input
                 type="email"
                 required
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full mt-1 bg-[#162244] border border-blue-800/40 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
             <div>
-              <label className="block text-xs text-slate-400 mb-1">Password</label>
+              <label className="text-xs font-semibold text-gray-300">Password</label>
               <input
                 type="password"
                 required
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full mt-1 bg-[#162244] border border-blue-800/40 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
             <button
               type="submit"
-              className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg text-sm transition"
+              className="w-full mt-2 bg-blue-600 hover:bg-blue-500 transition py-2.5 rounded-lg font-semibold text-sm shadow-lg shadow-blue-600/30"
             >
-              {isRegister ? "Create Account" : "Sign In"}
+              {isSignUp ? "Create Account" : "Sign In"}
             </button>
           </form>
 
-          <div className="text-center">
-            <button
-              onClick={() => {
-                setIsRegister(!isRegister);
-                setAuthError("");
-              }}
-              className="text-xs text-indigo-400 hover:underline"
-            >
-              {isRegister ? "Already have an account? Sign In" : "Need an account? Sign Up"}
-            </button>
-          </div>
+          <button
+            onClick={() => setIsSignUp(!isSignUp)}
+            className="w-full text-center text-xs text-blue-400 hover:underline mt-6"
+          >
+            {isSignUp ? "Already have an account? Log in" : "Need an account? Sign up"}
+          </button>
         </div>
-      </main>
+      </div>
     );
   }
 
-  // 2. Authenticated Dashboard
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-50 p-8 font-sans">
-      <div className="max-w-5xl mx-auto space-y-8">
-        
-        {/* Header */}
-        <div className="border-b border-slate-800 pb-6 flex justify-between items-center">
+    <div className="min-h-screen bg-[#070b19] text-white p-6 md:p-12">
+      <div className="max-w-6xl mx-auto space-y-8">
+        <header className="flex justify-between items-center border-b border-blue-900/30 pb-6">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight text-indigo-400">CloudVault Asset Hub</h1>
-            <p className="text-sm text-slate-400 mt-1">Logged in as {session.name} ({session.email})</p>
+            <h1 className="text-3xl font-extrabold text-blue-400">CloudVault Asset Hub</h1>
+            <p className="text-xs text-gray-400 mt-1">Direct S3 Ingestion &bull; Event Worker &bull; CloudFront OAC</p>
           </div>
           <button
-            onClick={handleLogout}
-            className="px-4 py-2 border border-slate-700 hover:bg-slate-800 text-xs rounded-lg transition"
+            onClick={handleSignOut}
+            className="px-4 py-2 rounded-lg text-xs font-semibold border border-gray-700 bg-gray-900/50 hover:bg-gray-800 transition"
           >
             Sign Out
           </button>
-        </div>
+        </header>
 
-        {/* Ingestion Section */}
-        <section className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-200 mb-4">Direct S3 Asset Ingestion</h2>
-          <form onSubmit={handleUpload} className="flex flex-col sm:flex-row gap-4 items-center">
+        {/* Upload Card */}
+        <div className="bg-[#0e162f] border border-blue-900/40 rounded-2xl p-6 shadow-xl">
+          <h2 className="text-lg font-semibold text-gray-200 mb-4">Direct S3 Asset Ingestion</h2>
+          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
             <input
               type="file"
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFile(e.target.files?.[0] || null)}
-              className="file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 text-sm text-slate-400 w-full cursor-pointer"
+              onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+              className="file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-500 text-sm text-gray-400 cursor-pointer"
             />
             <button
-              type="submit"
-              disabled={!file || uploading}
-              className="w-full sm:w-auto px-6 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed font-medium rounded-lg text-sm transition shrink-0"
+              onClick={handleUpload}
+              disabled={!selectedFile || uploading}
+              className="px-6 py-2.5 rounded-xl text-sm font-semibold bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition shadow-lg shadow-blue-600/30"
             >
-              {uploading ? "Streaming to S3..." : "Upload"}
+              {uploading ? "Ingesting..." : "Upload"}
             </button>
-          </form>
-          {statusMsg && <p className="text-xs text-indigo-300 mt-3 font-mono">{statusMsg}</p>}
-        </section>
+          </div>
+          {uploadStatus && (
+            <p className="text-xs font-mono mt-3 text-blue-300">{uploadStatus}</p>
+          )}
+        </div>
 
-        {/* Asset Catalog */}
-        <section className="space-y-4">
+        {/* Assets Catalog */}
+        <div className="bg-[#0e162f] border border-blue-900/40 rounded-2xl p-6 shadow-xl space-y-4">
           <div className="flex justify-between items-center">
-            <h2 className="text-lg font-semibold text-slate-200">My Assets</h2>
-            <button onClick={loadAssets} className="text-xs text-indigo-400 hover:text-indigo-300 transition">
+            <h2 className="text-lg font-semibold text-gray-200">My Assets</h2>
+            <button
+              onClick={loadAssets}
+              className="text-xs text-blue-400 hover:underline"
+            >
               Refresh Table
             </button>
           </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-            <table className="w-full text-left text-sm text-slate-300">
-              <thead className="bg-slate-950/50 text-xs uppercase text-slate-400 border-b border-slate-800">
-                <tr>
-                  <th className="px-6 py-3">File Name</th>
-                  <th className="px-6 py-3">Type</th>
-                  <th className="px-6 py-3">Status</th>
-                  <th className="px-6 py-3">S3 Key</th>
-                  <th className="px-6 py-3 text-right">Action</th>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-blue-900/40 text-gray-400 uppercase tracking-wider">
+                  <th className="py-3 px-4">File Name</th>
+                  <th className="py-3 px-4">Type</th>
+                  <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4">S3 Key</th>
+                  <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-blue-900/20 font-medium">
                 {assets.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
-                      No assets found. Upload an image, PDF, or video above.
+                    <td colSpan={5} className="py-8 text-center text-gray-500">
+                      No assets uploaded yet.
                     </td>
                   </tr>
                 ) : (
                   assets.map((asset) => (
-                    <tr key={asset.assetId} className="hover:bg-slate-800/50 transition">
-                      <td className="px-6 py-4 font-medium text-slate-200">{asset.fileName}</td>
-                      <td className="px-6 py-4 text-xs font-mono text-slate-400">{asset.mimeType}</td>
-                      <td className="px-6 py-4">
+                    <tr key={asset.asset_id} className="hover:bg-blue-950/20 transition">
+                      <td className="py-3.5 px-4 font-semibold text-gray-200">
+                        {asset.file_name}
+                      </td>
+                      <td className="py-3.5 px-4 text-gray-400 font-mono">
+                        {asset.content_type}
+                      </td>
+                      <td className="py-3.5 px-4">
                         <span
-                          className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                          className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
                             asset.status === "COMPLETED"
-                              ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
-                              : "bg-amber-950 text-amber-400 border border-amber-800"
+                              ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                              : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
                           }`}
                         >
                           {asset.status}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-xs font-mono text-slate-500 truncate max-w-xs">
-                        {asset.s3KeyRaw}
+                      <td className="py-3.5 px-4 text-gray-400 font-mono truncate max-w-[200px]">
+                        {asset.raw_s3_key}
                       </td>
-                      <td className="px-6 py-4 text-right">
-                        {asset.status === "COMPLETED" ? (
-                          <button
-                            onClick={() => handleDownload(asset.assetId)}
-                            className="text-xs text-indigo-400 hover:text-indigo-300 font-medium underline"
-                          >
-                            Download (CDN)
-                          </button>
+                      <td className="py-3.5 px-4 text-right space-x-2 whitespace-nowrap">
+                        {asset.download_url ? (
+                          <>
+                            <a
+                              href={asset.download_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              download
+                              className="inline-block px-3 py-1.5 bg-blue-600/30 hover:bg-blue-600/50 border border-blue-500/40 text-blue-300 rounded-lg text-xs font-semibold transition"
+                            >
+                              Download
+                            </a>
+                            <button
+                              onClick={() => handleShare(asset.download_url!, asset.asset_id)}
+                              className="px-3 py-1.5 bg-purple-600/30 hover:bg-purple-600/50 border border-purple-500/40 text-purple-300 rounded-lg text-xs font-semibold transition"
+                            >
+                              {copiedId === asset.asset_id ? "Copied!" : "Share"}
+                            </button>
+                          </>
                         ) : (
-                          <span className="text-xs text-slate-500 italic">Processing...</span>
+                          <span className="text-gray-500 italic text-xs mr-2">Processing...</span>
                         )}
+
+                        <button
+                          onClick={() => handleDelete(asset.asset_id)}
+                          disabled={deletingId === asset.asset_id}
+                          className="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/40 border border-rose-500/40 text-rose-300 rounded-lg text-xs font-semibold transition disabled:opacity-50"
+                        >
+                          {deletingId === asset.asset_id ? "Deleting..." : "Delete"}
+                        </button>
                       </td>
                     </tr>
                   ))
@@ -285,9 +309,8 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
-        </section>
-
+        </div>
       </div>
-    </main>
+    </div>
   );
 }

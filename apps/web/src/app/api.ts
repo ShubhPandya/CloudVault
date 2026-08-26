@@ -1,56 +1,32 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-export interface AssetRecord {
-  assetId: string;
-  userId: string;
-  fileName: string;
-  s3KeyRaw: string;
-  s3KeyThumb?: string;
-  mimeType: string;
-  status: "PENDING_UPLOAD" | "COMPLETED" | "FAILED";
-  createdAt: string;
-  sizeBytes?: number;
-  metadata?: Record<string, unknown>;
+export interface Asset {
+  asset_id: string;
+  file_name: string;
+  content_type: string;
+  status: string;
+  raw_s3_key: string;
+  download_url?: string;
+  thumbnail_url?: string;
 }
 
-export interface UserSession {
-  access_token: string;
-  user_id: string;
-  name: string;
-  email: string;
-}
-
-export async function registerUser(
-  name: string,
-  email: string,
-  password: string
-): Promise<UserSession> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/auth/signup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, email, password }),
+export async function fetchUserAssets(token: string): Promise<Asset[]> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/assets/`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || "Registration failed");
-  }
+  if (!res.ok) throw new Error("Failed to fetch assets");
   return res.json();
 }
 
-export async function loginUser(
-  email: string,
-  password: string
-): Promise<UserSession> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+export async function deleteAsset(assetId: string, token: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/assets/${assetId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(err.detail || "Invalid login credentials");
+    throw new Error(err.detail || "Failed to delete asset");
   }
-  return res.json();
 }
 
 export async function directS3Upload(file: File, token: string): Promise<string> {
@@ -75,7 +51,6 @@ export async function directS3Upload(file: File, token: string): Promise<string>
 
   const { upload_url, asset_id } = await presignedRes.json();
 
-  // Stream binary directly to S3
   const uploadRes = await fetch(upload_url, {
     method: "PUT",
     headers: {
@@ -89,25 +64,4 @@ export async function directS3Upload(file: File, token: string): Promise<string>
   }
 
   return asset_id;
-}
-
-export async function fetchUserAssets(token: string): Promise<AssetRecord[]> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/assets/`, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store",
-  });
-  if (!res.ok) return [];
-  return res.json();
-}
-
-export async function getAssetDownloadUrl(
-  assetId: string,
-  token: string
-): Promise<string> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/assets/${assetId}/download-url`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error("Failed to generate download URL");
-  const data = await res.json();
-  return data.download_url;
 }

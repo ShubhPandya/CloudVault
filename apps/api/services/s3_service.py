@@ -16,7 +16,6 @@ def generate_presigned_upload_url(
     content_type: str,
     expires_in: int = 300,
 ) -> str:
-    """Generates an AWS SigV4 presigned PUT URL for client-side direct ingestion."""
     params = {
         "Bucket": settings.S3_BUCKET_NAME,
         "Key": object_key,
@@ -30,3 +29,14 @@ def generate_presigned_upload_url(
         HttpMethod="PUT",
     )
     return url
+
+
+def delete_s3_object(object_key: str) -> None:
+    """Deletes an object key from the CloudVault S3 bucket."""
+    try:
+        s3_client.delete_object(
+            Bucket=settings.S3_BUCKET_NAME,
+            Key=object_key,
+        )
+    except Exception as e:
+        print(f"Error deleting {object_key} from S3: {e}")
