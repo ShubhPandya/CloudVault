@@ -1,0 +1,195 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: CloudVault - Serverless Ingestion and Processing Pipeline
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 512
+    Runtime: python3.13
+    Tracing: Active
+    Environment:
+      Variables:
+        ENV: !Ref Environment
+        TABLE_NAME: !Sub cloudvault-table-${Environment}
+
+Resources:
+  # 1. DynamoDB Single Table
+  CloudVaultTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub cloudvault-table-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  # 2. SQS Dead-Letter Queue & Main Queue
+  AssetProcessingDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub cloudvault-processing-dlq-${Environment}
+      MessageRetentionPeriod: 1209600
+
+  AssetProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub cloudvault-processing-queue-${Environment}
+      VisibilityTimeout: 300
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AssetProcessingDLQ.Arn
+        maxReceiveCount: 3
+
+  AssetProcessingQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref AssetProcessingQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt AssetProcessingQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub arn:aws:s3:::cloudvault-raw-assets-${Environment}
+
+  # 3. Private S3 Raw Bucket with Notification Configuration & Full CORS
+  RawAssetsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: AssetProcessingQueuePolicy
+    Properties:
+      BucketName: !Sub cloudvault-raw-assets-${Environment}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - HEAD
+            AllowedOrigins:
+              - '*'
+            ExposedHeaders:
+              - ETag
+            MaxAge: 3000
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+            Queue: !GetAtt AssetProcessingQueue.Arn
+
+  # 4. Lambda Worker Function
+  AssetWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../services/worker
+      Handler: handler.lambda_handler
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Sub cloudvault-raw-assets-${Environment}
+        - S3WritePolicy:
+            BucketName: !Sub cloudvault-raw-assets-${Environment}
+        - DynamoDBCrudPolicy:
+            TableName: !Sub cloudvault-table-${Environment}
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AssetProcessingQueue.Arn
+            BatchSize: 5
+
+  # 5. CloudFront Origin Access Control (OAC)
+  CloudVaultOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub cloudvault-oac-${Environment}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # 6. CloudFront CDN Distribution
+  CloudVaultDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub CloudVault CDN Distribution - ${Environment}
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt RawAssetsBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudVaultOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+
+  # 7. S3 Bucket Policy granting CloudFront read access via OAC
+  RawAssetsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref RawAssetsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipalReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${RawAssetsBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudVaultDistribution}
+
+Outputs:
+  BucketName:
+    Value: !Ref RawAssetsBucket
+  DynamoDBTableName:
+    Value: !Ref CloudVaultTable
+  QueueURL:
+    Value: !Ref AssetProcessingQueue
+  CloudFrontDomain:
+    Value: !GetAtt CloudVaultDistribution.DomainName
